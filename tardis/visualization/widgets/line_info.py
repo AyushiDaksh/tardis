@@ -127,7 +127,9 @@ class LineInfoWidget:
         return cls(
             lines_data=sim.plasma.lines.reset_index().set_index("line_id"),
             line_interaction_analysis={
-                filter_mode: LastLineInteraction.from_model(sim, filter_mode)
+                filter_mode: LastLineInteraction.from_simulation(
+                    sim, filter_mode
+                )
                 for filter_mode in cls.FILTER_MODES
             },
             spectrum_wavelength=sim.runner.spectrum.wavelength,
