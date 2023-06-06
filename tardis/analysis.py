@@ -13,14 +13,14 @@ import pandas as pd
 
 class LastLineInteraction(object):
     @classmethod
-    def from_model(cls, model, packet_filter_mode="packet_out_nu"):
+    def from_simulation(cls, sim, packet_filter_mode="packet_out_nu"):
         return cls(
-            model.runner.last_line_interaction_in_id,
-            model.runner.last_line_interaction_out_id,
-            model.runner.last_line_interaction_shell_id,
-            model.runner.output_nu,
-            model.runner.last_interaction_in_nu,
-            model.plasma.atomic_data.lines,
+            sim.runner.last_line_interaction_in_id,
+            sim.runner.last_line_interaction_out_id,
+            sim.runner.last_line_interaction_shell_id,
+            sim.runner.output_nu,
+            sim.runner.last_interaction_in_nu,
+            sim.plasma.lines,
             packet_filter_mode,
         )
 
@@ -42,19 +42,29 @@ class LastLineInteraction(object):
         self.last_line_interaction_shell_id = last_line_interaction_shell_id[
             mask
         ]
+
+        # Set wavelengths of each packet (from frequencies)
         self.last_line_interaction_out_angstrom = u.Quantity(
             output_nu[mask], "Hz"
         ).to(u.Angstrom, equivalencies=u.spectral())
         self.last_line_interaction_in_angstrom = u.Quantity(
             input_nu[mask], "Hz"
         ).to(u.Angstrom, equivalencies=u.spectral())
+
         self.lines = lines
 
+        # Wavelength filter
         self._wavelength_start = 0 * u.angstrom
         self._wavelength_end = np.inf * u.angstrom
+
+        # Atomic and ion number filter
         self._atomic_number = None
         self._ion_number = None
+
+        # Whether to filter on Absorbed wavelengths or emitted wavelengths
         self.packet_filter_mode = packet_filter_mode
+
+        # Update table according to current filters
         self.update_last_interaction_filter()
 
     @property
@@ -66,6 +76,7 @@ class LastLineInteraction(object):
         if not isinstance(value, u.Quantity):
             raise ValueError("needs to be a Quantity")
         self._wavelength_start = value
+        # Update table according to new filter value
         self.update_last_interaction_filter()
 
     @property
@@ -77,6 +88,7 @@ class LastLineInteraction(object):
         if not isinstance(value, u.Quantity):
             raise ValueError("needs to be a Quantity")
         self._wavelength_end = value
+        # Update table according to new filter value
         self.update_last_interaction_filter()
 
     @property
@@ -86,6 +98,7 @@ class LastLineInteraction(object):
     @atomic_number.setter
     def atomic_number(self, value):
         self._atomic_number = value
+        # Update table according to new filter value
         self.update_last_interaction_filter()
 
     @property
@@ -95,9 +108,11 @@ class LastLineInteraction(object):
     @ion_number.setter
     def ion_number(self, value):
         self._ion_number = value
+        # Update table according to new filter value
         self.update_last_interaction_filter()
 
     def update_last_interaction_filter(self):
+        # Compute the mask for the wavelength range selected
         if self.packet_filter_mode == "packet_out_nu":
             packet_filter = (
                 self.last_line_interaction_out_angstrom > self.wavelength_start
@@ -122,6 +137,7 @@ class LastLineInteraction(object):
                 "allowed are: packet_out_nu, packet_in_nu, line_in_nu"
             )
 
+        # Apply the mask computed above
         self.last_line_in = self.lines.iloc[
             self.last_line_interaction_in_id[packet_filter]
         ]
@@ -129,6 +145,7 @@ class LastLineInteraction(object):
             self.last_line_interaction_out_id[packet_filter]
         ]
 
+        # Filter by atomic number if specified
         if self.atomic_number is not None:
             self.last_line_in = self.last_line_in.xs(
                 self.atomic_number, level="atomic_number", drop_level=False
@@ -137,6 +154,7 @@ class LastLineInteraction(object):
                 self.atomic_number, level="atomic_number", drop_level=False
             )
 
+        # Filter by ion number if specified
         if self.ion_number is not None:
             self.last_line_in = self.last_line_in.xs(
                 self.ion_number, level="ion_number", drop_level=False
@@ -145,23 +163,22 @@ class LastLineInteraction(object):
                 self.ion_number, level="ion_number", drop_level=False
             )
 
-        last_line_in_count = self.last_line_in.line_id.value_counts()
-        last_line_out_count = self.last_line_out.line_id.value_counts()
-
-        self.last_line_in_table = self.last_line_in.reset_index()[
-            [
-                "wavelength",
-                "atomic_number",
-                "ion_number",
-                "level_number_lower",
-                "level_number_upper",
-            ]
-        ]
-        self.last_line_in_table["count"] = last_line_in_count
-        self.last_line_in_table.sort_values(
-            by="count", ascending=False, inplace=True
+        # Get counts of each transition in the current simulation
+        last_line_in_count = pd.Series(
+            self.last_line_in.line_id.value_counts(), name="num_electrons"
         )
-        self.last_line_out_table = self.last_line_out.reset_index()[
+        last_line_out_count = pd.Series(
+            self.last_line_out.line_id.value_counts(), name="num_electrons"
+        )
+
+        # Extract the relevant columns from line info and merge the counts from above
+        self.last_line_in_table = self.last_line_in.reset_index().set_index(
+            "line_id"
+        )
+        self.last_line_in_table = self.last_line_in_table[
+            ~self.last_line_in_table.index.duplicated(keep="first")
+        ]
+        self.last_line_in_table = self.last_line_in_table[
             [
                 "wavelength",
                 "atomic_number",
@@ -170,9 +187,29 @@ class LastLineInteraction(object):
                 "level_number_upper",
             ]
         ]
-        self.last_line_out_table["count"] = last_line_out_count
+        self.last_line_in_table["num_electrons"] = last_line_in_count
+        self.last_line_in_table.sort_values(
+            by="num_electrons", ascending=False, inplace=True
+        )
+
+        self.last_line_out_table = self.last_line_out.reset_index().set_index(
+            "line_id"
+        )
+        self.last_line_out_table = self.last_line_out_table[
+            ~self.last_line_out_table.index.duplicated(keep="first")
+        ]
+        self.last_line_out_table = self.last_line_out_table[
+            [
+                "wavelength",
+                "atomic_number",
+                "ion_number",
+                "level_number_lower",
+                "level_number_upper",
+            ]
+        ]
+        self.last_line_out_table["num_electrons"] = last_line_out_count
         self.last_line_out_table.sort_values(
-            by="count", ascending=False, inplace=True
+            by="num_electrons", ascending=False, inplace=True
         )
 
     def plot_wave_in_out(self, fig, do_clf=True, plot_resonance=True):
